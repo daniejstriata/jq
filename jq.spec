@@ -47,7 +47,7 @@ Development files for %{name}
 
 
 %prep
-%autosetup -n %{name}-%{name}-%{version} -p1
+%autosetup -n %{name}-%{version} -p1
 
 %build
 autoreconf -if
