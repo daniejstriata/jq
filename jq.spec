@@ -1,69 +1,100 @@
-# This is spec file maintained by developers of JQ, not by a OS distro.
-# Your OS of choice will likely ignore this RPM spec file.
-Summary: Command-line JSON processor
-Name: jq
-Version: %{myver}
-Release: %{myrel}%{?dist}
-Source0: jq-%{myver}.tar.gz
-URL: https://jqlang.github.io/jq
-License: MIT AND ICU AND CC-BY-3.0
-AutoReqProv: no
-#BuildPrereq: autoconf, libtool, automake, flex, bison, python
+Name:           jq
+Version:        1.7.1
+Release:        %autorelease
+Summary:        Command-line JSON processor
 
-Group: Applications/System
-# Requires:
+License:        MIT AND ICU AND CC-BY-3.0
+URL:            https://jqlang.github.io/jq/
+Source0:        https://github.com/jqlang/jq/releases/download/%{name}-%{version}/%{name}-%{version}.tar.gz
 
-# Disables debug packages and stripping of binaries:
-%global _enable_debug_package 0
-%global debug_package %{nil}
-%global __os_install_post %{nil}
+BuildRequires:  gcc
+BuildRequires:  flex
+BuildRequires:  bison
+BuildRequires:  chrpath
+BuildRequires:  oniguruma-devel
 
-# Crank up the compression
-%define _binary_payload w7.lzdio
+%ifarch %{valgrind_arches}
+BuildRequires:  valgrind
+%endif
+BuildRequires:  make
+BuildRequires:  autoconf
+BuildRequires:  automake
+BuildRequires:  libtool
+
 
 %description
-jq is a command-line JSON processor
+lightweight and flexible command-line JSON processor
+
+ jq is like sed for JSON data – you can use it to slice
+ and filter and map and transform structured data with
+ the same ease that sed, awk, grep and friends let you
+ play with text.
+
+ It is written in portable C, and it has zero runtime
+ dependencies.
+
+ jq can mangle the data format that you have into the
+ one that you want with very little effort, and the
+ program to do so is often shorter and simpler than
+ you'd expect.
+
+%package devel
+Summary:        Development files for %{name}
+Requires:       %{name}%{?_isa} = %{version}-%{release}
+
+%description devel
+Development files for %{name}
+
 
 %prep
-%setup
+%autosetup -n %{name}-%{name}-%{version} -p1
 
 %build
-echo "Building in: \"$(pwd)\""
-%if "%{devbuild}" == "yes"
-./configure --prefix=%{_prefix} --enable-devel
-%else
-./configure --prefix=%{_prefix}
-%endif
-make
+autoreconf -if
+%configure --disable-static
+%make_build
+# Docs already shipped in jq's tarball.
+# In order to build the manual page, it
+# is necessary to install rake, rubygem-ronn
+# and do the following steps:
+#
+# # yum install rake rubygem-ronn
+# $ cd docs/
+# $ curl -L https://get.rvm.io | bash -s stable --ruby=1.9.3
+# $ source $HOME/.rvm/scripts/rvm
+# $ bundle install
+# $ cd ..
+# $ ./configure
+# $ make real_docs
 
 %install
-echo "Installing to: \"%{buildroot}\""
-make install DESTDIR=%{buildroot}
+%make_install
+find %{buildroot} -name '*.la' -exec rm -f {} ';'
 
-%clean
-rm -rf %{buildroot}
+# Delete build-time RPATH that is unnecessary on an installed
+# system - rhbz#1987608
+chrpath -d %{buildroot}%{_bindir}/%{name}
+
+%if %{with check}
+%check
+# Valgrind used, so restrict architectures for check
+%ifarch %{ix86} x86_64
+make check
+%endif
+%endif
 
 %files
-%defattr(-,root,root)
-%{_bindir}/jq
-%if "%{devbuild}" == "yes"
-%{_libexecdir}/%{name}/jq_test
-%{_libexecdir}/%{name}/testdata
-%endif
-%{_datadir}/doc/%{name}/AUTHORS
-%{_datadir}/doc/%{name}/COPYING
-%{_datadir}/doc/%{name}/README.md
-%{_datadir}/man/man1/jq.1
+%license COPYING
+%doc AUTHORS COPYING NEWS.md README.md
+%{_bindir}/%{name}
+%{_libdir}/libjq.so.*
+%{_datadir}/man/man1/jq.1.gz
+
+%files devel
 %{_includedir}/jq.h
 %{_includedir}/jv.h
-%{_prefix}/lib/libjq.a
-%{_prefix}/lib/libjq.la
-%{_prefix}/lib/libjq.so
-%{_prefix}/lib/libjq.so.1
-%{_prefix}/lib/libjq.so.1.0.4
+%{_libdir}/libjq.so
+%{_libdir}/pkgconfig/libjq.pc
 
 %changelog
-
-%pre
-
-%post
+%autochangelog
