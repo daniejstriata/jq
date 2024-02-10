@@ -97,5 +97,5 @@ make check
 %{_libdir}/pkgconfig/libjq.pc
 
 %changelog
-* Sat Feb 10 2024 - Danie de Jager <danie.dejager@gmail.com> - 1.7.1-1
+* Sat Feb 10 2024 - Danie de Jager <danie.dejager@gmail.com> - 1.7.1-2
 - Initial build for COPR
