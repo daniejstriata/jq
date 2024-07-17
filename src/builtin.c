@@ -715,7 +715,7 @@ static jv f_format(jq_state *jq, jv input, jv fmt) {
     input = f_tostring(jq, input);
     const unsigned char* data = (const unsigned char*)jv_string_value(input);
     int len = jv_string_length_bytes(jv_copy(input));
-    size_t decoded_len = (3 * len) / 4; // 3 usable bytes for every 4 bytes of input
+    size_t decoded_len = (3 * (size_t)len) / 4; // 3 usable bytes for every 4 bytes of input
     char *result = jv_mem_calloc(decoded_len, sizeof(char));
     memset(result, 0, decoded_len * sizeof(char));
     uint32_t ri = 0;
@@ -1197,6 +1197,58 @@ static jv f_string_indexes(jq_state *jq, jv a, jv b) {
   return jv_string_indexes(a, b);
 }
 
+enum trim_op {
+  TRIM_LEFT  = 1 << 0,
+  TRIM_RIGHT = 1 << 1
+};
+
+static jv string_trim(jv a, int op) {
+  if (jv_get_kind(a) != JV_KIND_STRING) {
+    return ret_error(a, jv_string("trim input must be a string"));
+  }
+
+  int len = jv_string_length_bytes(jv_copy(a));
+  const char *start = jv_string_value(a);
+  const char *trim_start = start;
+  const char *end = trim_start + len;
+  const char *trim_end = end;
+  int c;
+
+  if (op & TRIM_LEFT) {
+    for (;;) {
+      const char *ns = jvp_utf8_next(trim_start, end, &c);
+      if (!ns || !jvp_codepoint_is_whitespace(c))
+        break;
+      trim_start = ns;
+    }
+  }
+
+  // make sure not empty string or start trim has trimmed everything
+  if ((op & TRIM_RIGHT) && trim_end > trim_start) {
+    for (;;) {
+      const char *ns = jvp_utf8_backtrack(trim_end-1, trim_start, NULL);
+      jvp_utf8_next(ns, trim_end, &c);
+      if (!jvp_codepoint_is_whitespace(c))
+        break;
+      trim_end = ns;
+      if (ns == trim_start)
+        break;
+    }
+  }
+
+  // no new string needed if there is nothing to trim
+  if (trim_start == start && trim_end == end)
+    return a;
+
+  jv ts = jv_string_sized(trim_start, trim_end - trim_start);
+  jv_free(a);
+  return ts;
+}
+
+static jv f_string_trim(jq_state *jq, jv a)  { return string_trim(a, TRIM_LEFT | TRIM_RIGHT); }
+static jv f_string_ltrim(jq_state *jq, jv a) { return string_trim(a, TRIM_LEFT); }
+static jv f_string_rtrim(jq_state *jq, jv a) { return string_trim(a, TRIM_RIGHT); }
+
 static jv f_string_implode(jq_state *jq, jv a) {
   if (jv_get_kind(a) != JV_KIND_ARRAY) {
     return ret_error(a, jv_string("implode input must be an array"));
@@ -1422,7 +1474,7 @@ static jv f_strptime(jq_state *jq, jv a, jv b) {
   }
 #endif
   const char *end = strptime(input, fmt, &tm);
-  if (end == NULL || (*end != '\0' && !isspace(*end))) {
+  if (end == NULL || (*end != '\0' && !isspace((unsigned char)*end))) {
     return ret_error2(a, b, jv_string_fmt("date \"%s\" does not match format \"%s\"", input, fmt));
   }
   jv_free(b);
@@ -1461,30 +1513,35 @@ static jv f_strptime(jq_state *jq, jv a, jv b) {
   return r;
 }
 
-#define TO_TM_FIELD(t, j, i)                    \
-    do {                                        \
-      jv n = jv_array_get(jv_copy(j), (i));     \
-      if (jv_get_kind(n) != (JV_KIND_NUMBER)) { \
-        jv_free(n);                             \
-        jv_free(j);                             \
-        return 0;                               \
-      }                                         \
-      t = jv_number_value(n);                   \
-      jv_free(n);                               \
-    } while (0)
-
 static int jv2tm(jv a, struct tm *tm) {
   memset(tm, 0, sizeof(*tm));
-  TO_TM_FIELD(tm->tm_year, a, 0);
-  tm->tm_year -= 1900;
-  TO_TM_FIELD(tm->tm_mon,  a, 1);
-  TO_TM_FIELD(tm->tm_mday, a, 2);
-  TO_TM_FIELD(tm->tm_hour, a, 3);
-  TO_TM_FIELD(tm->tm_min,  a, 4);
-  TO_TM_FIELD(tm->tm_sec,  a, 5);
-  TO_TM_FIELD(tm->tm_wday, a, 6);
-  TO_TM_FIELD(tm->tm_yday, a, 7);
-  jv_free(a);
+  static const size_t offsets[] = {
+    offsetof(struct tm, tm_year),
+    offsetof(struct tm, tm_mon),
+    offsetof(struct tm, tm_mday),
+    offsetof(struct tm, tm_hour),
+    offsetof(struct tm, tm_min),
+    offsetof(struct tm, tm_sec),
+    offsetof(struct tm, tm_wday),
+    offsetof(struct tm, tm_yday),
+  };
+
+  for (size_t i = 0; i < (sizeof offsets / sizeof *offsets); ++i) {
+    jv n = jv_array_get(jv_copy(a), i);
+    if (!jv_is_valid(n))
+      break;
+    if (jv_get_kind(n) != JV_KIND_NUMBER || jvp_number_is_nan(n)) {
+      jv_free(a);
+      jv_free(n);
+      return 0;
+    }
+    double d = jv_number_value(n);
+    if (i == 0) /* year */
+      d -= 1900;
+    *(int *)((void *)tm + offsets[i]) = d < INT_MIN ? INT_MIN :
+                                        d > INT_MAX ? INT_MAX : (int)d;
+    jv_free(n);
+  }
 
   // We use UTC everywhere (gettimeofday, gmtime) and UTC does not do DST.
   // Setting tm_isdst to 0 is done by the memset.
@@ -1494,6 +1551,7 @@ static int jv2tm(jv a, struct tm *tm) {
   // hope it is okay to initialize them to zero, because the standard does not
   // provide an alternative.
 
+  jv_free(a);
   return 1;
 }
 
@@ -1599,9 +1657,9 @@ static jv f_strftime(jq_state *jq, jv a, jv b) {
     }
   } else if (jv_get_kind(a) != JV_KIND_ARRAY) {
     return ret_error2(a, b, jv_string("strftime/1 requires parsed datetime inputs"));
-  } else if (jv_get_kind(b) != JV_KIND_STRING) {
-    return ret_error2(a, b, jv_string("strftime/1 requires a string format"));
   }
+  if (jv_get_kind(b) != JV_KIND_STRING)
+    return ret_error2(a, b, jv_string("strftime/1 requires a string format"));
   struct tm tm;
   if (!jv2tm(a, &tm))
     return ret_error(b, jv_string("strftime/1 requires parsed datetime inputs"));
@@ -1630,9 +1688,9 @@ static jv f_strflocaltime(jq_state *jq, jv a, jv b) {
     a = f_localtime(jq, a);
   } else if (jv_get_kind(a) != JV_KIND_ARRAY) {
     return ret_error2(a, b, jv_string("strflocaltime/1 requires parsed datetime inputs"));
-  } else if (jv_get_kind(b) != JV_KIND_STRING) {
-    return ret_error2(a, b, jv_string("strflocaltime/1 requires a string format"));
   }
+  if (jv_get_kind(b) != JV_KIND_STRING)
+    return ret_error2(a, b, jv_string("strflocaltime/1 requires a string format"));
   struct tm tm;
   if (!jv2tm(a, &tm))
     return ret_error(b, jv_string("strflocaltime/1 requires parsed datetime inputs"));
@@ -1683,6 +1741,15 @@ static jv f_current_line(jq_state *jq, jv a) {
   return jq_util_input_get_current_line(jq);
 }
 
+static jv f_have_decnum(jq_state *jq, jv a) {
+  jv_free(a);
+#ifdef USE_DECNUM
+  return jv_true();
+#else
+  return jv_false();
+#endif
+}
+
 #define LIBM_DD(name) \
   {f_ ## name, #name, 1},
 #define LIBM_DD_NO(name) LIBM_DD(name)
@@ -1715,6 +1782,9 @@ BINOPS
   {f_string_explode, "explode", 1},
   {f_string_implode, "implode", 1},
   {f_string_indexes, "_strindices", 2},
+  {f_string_trim, "trim", 1},
+  {f_string_ltrim, "ltrim", 1},
+  {f_string_rtrim, "rtrim", 1},
   {f_setpath, "setpath", 3}, // FIXME typechecking
   {f_getpath, "getpath", 2},
   {f_delpaths, "delpaths", 2},
@@ -1757,6 +1827,8 @@ BINOPS
   {f_now, "now", 1},
   {f_current_filename, "input_filename", 1},
   {f_current_line, "input_line_number", 1},
+  {f_have_decnum, "have_decnum", 1},
+  {f_have_decnum, "have_literal_numbers", 1},
 };
 #undef LIBM_DDDD_NO
 #undef LIBM_DDD_NO

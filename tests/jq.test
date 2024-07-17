@@ -178,6 +178,11 @@ map(try .a[] catch ., try .a.[] catch ., .a[]?, .a.[]?)
 [{"a": [1,2]}, {"a": 123}]
 [1,2,1,2,1,2,1,2,"Cannot iterate over number (123)","Cannot iterate over number (123)"]
 
+# oss-fuzz #66070: objects[] leaks if a non-last element throws an error
+try ["OK", (.[] | error)] catch ["KO", .]
+{"a":["b"],"c":["d"]}
+["KO",["b"]]
+
 #
 # Negative array indices
 #
@@ -1329,6 +1334,26 @@ split("")
 "xababababax"
 [1,7,[1,3,5,7]]
 
+# trim
+# \u000b is vertical tab (\v not supported by json)
+map(trim), map(ltrim), map(rtrim)
+[" \n\t\r\f\u000b", "","  ", "a", " a ", "abc", "  abc  ", "  abc", "abc  "]
+["", "", "", "a", "a", "abc", "abc", "abc", "abc"]
+["", "", "", "a", "a ", "abc", "abc  ", "abc", "abc  "]
+["", "", "", "a", " a", "abc", "  abc", "  abc", "abc"]
+
+trim, ltrim, rtrim
+"\u0009\u000A\u000B\u000C\u000D\u0020\u0085\u00A0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u2028\u2029\u202F\u205F\u3000abc\u0009\u000A\u000B\u000C\u000D\u0020\u0085\u00A0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u2028\u2029\u202F\u205F\u3000"
+"abc"
+"abc\u0009\u000A\u000B\u000C\u000D\u0020\u0085\u00A0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u2028\u2029\u202F\u205F\u3000"
+"\u0009\u000A\u000B\u000C\u000D\u0020\u0085\u00A0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u2028\u2029\u202F\u205F\u3000abc"
+
+try trim catch ., try ltrim catch ., try rtrim catch .
+123
+"trim input must be a string"
+"trim input must be a string"
+"trim input must be a string"
+
 indices(1)
 [0,1,1,2,3,4,1,5]
 [1,2,6]
@@ -1563,6 +1588,10 @@ strftime("%A, %B %d, %Y")
 1435677542.822351
 "Tuesday, June 30, 2015"
 
+strftime("%Y-%m-%dT%H:%M:%SZ")
+[2024,2,15]
+"2024-03-15T00:00:00Z"
+
 gmtime
 1425599507
 [2015,2,5,23,51,47,4,63]
@@ -1579,6 +1608,15 @@ try strflocaltime("%Y-%m-%dT%H:%M:%SZ") catch .
 try mktime catch .
 ["a",1,2,3,4,5,6,7]
 "mktime requires parsed datetime inputs"
+
+# oss-fuzz #67403: non-string argument with number input fails assert
+try ["OK", strftime([])] catch ["KO", .]
+0
+["KO","strftime/1 requires a string format"]
+
+try ["OK", strflocaltime({})] catch ["KO", .]
+0
+["KO","strflocaltime/1 requires a string format"]
 
 # module system
 import "a" as foo; import "b" as bar; def fooa: foo::a; [fooa, bar::a, bar::b, foo::a]
@@ -1836,17 +1874,17 @@ map(. == 1)
 
 # When no arithmetic is involved jq should preserve the literal value
 
-.[0] | tostring
+.[0] | tostring | . == if have_decnum then "13911860366432393" else "13911860366432392" end
 [13911860366432393]
-"13911860366432393"
+true
 
-.x | tojson
+.x | tojson | . == if have_decnum then "13911860366432393" else "13911860366432392" end
 {"x":13911860366432393}
-"13911860366432393"
+true
 
-13911860366432393 == 13911860366432392
+(13911860366432393 == 13911860366432392) | . == if have_decnum then false else true end
 null
-false
+true
 
 
 # Applying arithmetic to the value will truncate the result to double
@@ -1939,7 +1977,7 @@ tojson | fromjson
 {"a":null}
 
 # also "nan with payload" #2985
-fromjson | isnan
+if have_decnum then fromjson else nan end | isnan
 "nan1234"
 true
 
@@ -2131,3 +2169,10 @@ try ltrimstr("x") catch "x", try rtrimstr("x") catch "x" | "ok"
 ["ko","endswith() requires string inputs"]
 ["ok",""]
 ["ko","endswith() requires string inputs"]
+
+
+# oss-fuzz #66061: setpath/2 leaks when indexing array with array
+
+try ["OK", setpath([[1]]; 1)] catch ["KO", .]
+[]
+["KO","Cannot update field at array index of array"]
